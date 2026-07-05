@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 interface AnimeResult {
   id: number;
@@ -26,15 +26,11 @@ interface QA {
   model: string;
   summariesUsed: number;
   streaming: boolean;
-  episode: number; // episode the question was asked at
+  episode: number;
 }
 
 interface CommentsData {
-  mal: {
-    title: string;
-    url: string;
-    comments: number | null;
-  } | null;
+  mal: { title: string; url: string; comments: number | null } | null;
   reddit: {
     title: string;
     url: string;
@@ -49,6 +45,72 @@ interface CommentsData {
 function displayTitle(a: AnimeResult): string {
   return a.title.english || a.title.romaji || "Unknown";
 }
+
+/** Highlight "(episode N)" citations as lamp chips. */
+function renderAnswer(text: string) {
+  const parts = text.split(/(\((?:episode|ep\.?)\s*[\d,\s&–-]+\))/gi);
+  return parts.map((part, i) =>
+    /^\((?:episode|ep\.?)\s*[\d,\s&–-]+\)$/i.test(part) ? (
+      <span key={i} className="cite">
+        {part.slice(1, -1)}
+      </span>
+    ) : (
+      <Fragment key={i}>{part}</Fragment>
+    )
+  );
+}
+
+/** The bookmark boundary: lit episodes you've seen, veiled ones you haven't. */
+function EpisodeBoundary({
+  total,
+  episode,
+  setEpisode,
+}: {
+  total: number;
+  episode: number;
+  setEpisode: (n: number) => void;
+}) {
+  if (total <= 60) {
+    return (
+      <div className="strip" role="group" aria-label="Set your episode">
+        {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            title={`Episode ${n}`}
+            aria-label={`Episode ${n}`}
+            aria-pressed={n === episode}
+            onClick={() => setEpisode(n)}
+            className={`tick${n <= episode ? " lit" : ""}${n === episode ? " here" : ""}`}
+          />
+        ))}
+      </div>
+    );
+  }
+  const pct = (episode / total) * 100;
+  return (
+    <div className="bar-wrap">
+      <div className="bar">
+        <div className="bar-lit" style={{ width: `${pct}%` }} />
+      </div>
+      <input
+        type="range"
+        min={1}
+        max={total}
+        value={episode}
+        onChange={(e) => setEpisode(parseInt(e.target.value, 10))}
+        className="bar-range"
+        aria-label="Set your episode"
+      />
+      <div className="bar-mark" style={{ left: `${pct}%` }} />
+    </div>
+  );
+}
+
+const STARTERS = [
+  "Recap everything I've seen so far",
+  "Who are the main characters right now?",
+  "What should I remember before the next episode?",
+];
 
 export default function Home() {
   // search
@@ -73,12 +135,15 @@ export default function Home() {
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [comments, setComments] = useState<CommentsData | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
+  const [revealed, setRevealed] = useState<Set<number>>(new Set());
 
   // provider badge
   const [health, setHealth] = useState<{
     llm: { provider: string; model: string };
     redditEnabled: boolean;
   } | null>(null);
+
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/health")
@@ -118,6 +183,7 @@ export default function Home() {
     setHistory([]);
     setComments(null);
     setCommentsOpen(false);
+    setRevealed(new Set());
     setCoverage(null);
     setCoverageLoading(true);
 
@@ -136,85 +202,97 @@ export default function Home() {
   useEffect(() => {
     setComments(null);
     setCommentsOpen(false);
+    setRevealed(new Set());
   }, [episode, anime?.id]);
 
-  const ask = useCallback(async () => {
-    if (!anime || !question.trim() || asking) return;
-    const q = question.trim();
-    setQuestion("");
-    setAskError(null);
-    setAsking(true);
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [history.length]);
 
-    const entry: QA = {
-      question: q,
-      answer: "",
-      provider: "",
-      model: "",
-      summariesUsed: 0,
-      streaming: true,
-      episode,
-    };
-    // Follow-up context: completed exchanges asked at or below the current
-    // episode (an answer given at a higher episode could leak backwards).
-    const followUpHistory = history
-      .filter((h) => !h.streaming && h.answer && h.episode <= episode)
-      .slice(-6)
-      .map((h) => ({ question: h.question, answer: h.answer }));
+  const ask = useCallback(
+    async (text?: string) => {
+      const q = (text ?? question).trim();
+      if (!anime || !q || asking) return;
+      setQuestion("");
+      setAskError(null);
+      setAsking(true);
 
-    setHistory((h) => [...h, entry]);
-    const idx = history.length; // index of the new entry
+      const entry: QA = {
+        question: q,
+        answer: "",
+        provider: "",
+        model: "",
+        summariesUsed: 0,
+        streaming: true,
+        episode,
+      };
+      // Follow-up context: completed exchanges asked at or below the current
+      // episode (an answer given at a higher episode could leak backwards).
+      const followUpHistory = history
+        .filter((h) => !h.streaming && h.answer && h.episode <= episode)
+        .slice(-6)
+        .map((h) => ({ question: h.question, answer: h.answer }));
 
-    try {
-      const res = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: anime.title.english || anime.title.romaji,
-          altTitle: anime.title.romaji,
-          episode,
-          question: q,
-          history: followUpHistory,
-        }),
-      });
+      setHistory((h) => [...h, entry]);
+      const idx = history.length;
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Request failed" }));
-        throw new Error(err.error ?? "Request failed");
-      }
+      try {
+        const res = await fetch("/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: anime.title.english || anime.title.romaji,
+            altTitle: anime.title.romaji,
+            episode,
+            question: q,
+            history: followUpHistory,
+          }),
+        });
 
-      const provider = res.headers.get("X-Provider") ?? "";
-      const model = decodeURIComponent(res.headers.get("X-Model") ?? "");
-      const summariesUsed = parseInt(
-        res.headers.get("X-Summaries-Used") ?? "0",
-        10
-      );
-      setHistory((h) =>
-        h.map((e, i) => (i === idx ? { ...e, provider, model, summariesUsed } : e))
-      );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Request failed" }));
+          throw new Error(err.error ?? "Request failed");
+        }
 
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No response stream");
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        setHistory((h) =>
-          h.map((e, i) => (i === idx ? { ...e, answer: e.answer + text } : e))
+        const provider = res.headers.get("X-Provider") ?? "";
+        const model = decodeURIComponent(res.headers.get("X-Model") ?? "");
+        const summariesUsed = parseInt(
+          res.headers.get("X-Summaries-Used") ?? "0",
+          10
         );
+        setHistory((h) =>
+          h.map((e, i) =>
+            i === idx ? { ...e, provider, model, summariesUsed } : e
+          )
+        );
+
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No response stream");
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          setHistory((h) =>
+            h.map((e, i) => (i === idx ? { ...e, answer: e.answer + chunk } : e))
+          );
+        }
+        setHistory((h) =>
+          h.map((e, i) => (i === idx ? { ...e, streaming: false } : e))
+        );
+      } catch (err) {
+        setAskError(
+          `Couldn't get an answer — ${(err as Error).message}. Check that your model provider is running, then ask again.`
+        );
+        setHistory((h) =>
+          h.map((e, i) => (i === idx ? { ...e, streaming: false } : e))
+        );
+      } finally {
+        setAsking(false);
       }
-      setHistory((h) =>
-        h.map((e, i) => (i === idx ? { ...e, streaming: false } : e))
-      );
-    } catch (err) {
-      setAskError((err as Error).message);
-      setHistory((h) =>
-        h.map((e, i) => (i === idx ? { ...e, streaming: false } : e))
-      );
-    } finally {
-      setAsking(false);
-    }
-  }, [anime, question, episode, asking, history]);
+    },
+    [anime, question, episode, asking, history]
+  );
 
   const loadComments = useCallback(async () => {
     if (!anime) return;
@@ -237,72 +315,69 @@ export default function Home() {
     }
   }, [anime, episode, comments, commentsLoading]);
 
-  const maxEp = anime?.episodes ?? 9999;
-  const answerBoxRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    answerBoxRef.current?.scrollTo({ top: answerBoxRef.current.scrollHeight });
-  }, [history]);
+  const totalEpisodes =
+    anime?.episodes ?? Math.max(coverage?.maxEpisode ?? 0, episode, 12);
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10">
-      {/* Header */}
-      <div className="mb-8 flex items-start justify-between gap-4">
+    <main className="mx-auto max-w-2xl px-5 pb-24 pt-12">
+      {/* ── header ── */}
+      <header className="rise flex items-start justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Shiori <span className="text-violet-400">栞</span>
+          <h1 className="wordmark">
+            <span className="ribbon" aria-hidden />
+            Shiori<span className="kanji">栞</span>
           </h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Your bookmark knows where you are. Ask anything about the anime
-            you&apos;re watching — answers stop at your episode, so you never
-            get spoiled.
+          <p className="mt-2 max-w-md text-[0.92rem]" style={{ color: "var(--paper-dim)" }}>
+            Ask about the anime you&apos;re watching. Answers stop at your
+            bookmark — nothing past your episode exists here.
           </p>
         </div>
         {health && (
-          <div className="shrink-0 rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-400">
-            {health.llm.provider === "anthropic" ? "🧠 Claude" : "🖥️ Ollama"}{" "}
-            <span className="text-slate-500">· {health.llm.model}</span>
+          <div className="mt-2 flex shrink-0 items-center gap-2">
+            <span className="lamp-dot" aria-hidden />
+            <span className="eyebrow">
+              {decodeURIComponent(health.llm.model)} ·{" "}
+              {health.llm.provider === "anthropic" ? "claude" : "local"}
+            </span>
           </div>
         )}
-      </div>
+      </header>
 
-      {/* Search */}
-      <div className="relative">
+      {/* ── search ── */}
+      <div className="rise rise-1 relative mt-9">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => results.length && setShowResults(true)}
           placeholder={
-            anime
-              ? "Search a different anime…"
-              : "Search an anime (e.g. Frieren, One Piece)…"
+            anime ? "Switch to a different show…" : "Find the show you're watching…"
           }
-          className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 placeholder-slate-500 outline-none focus:border-violet-500"
+          className="search-input"
         />
         {searching && (
-          <span className="absolute right-4 top-3.5 text-xs text-slate-500">
-            searching…
+          <span
+            className="eyebrow absolute right-4 top-4"
+            style={{ color: "var(--mute)" }}
+          >
+            searching
           </span>
         )}
         {showResults && results.length > 0 && (
-          <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+          <div className="results">
             {results.map((a) => (
-              <button
-                key={a.id}
-                onClick={() => selectAnime(a)}
-                className="flex w-full items-center gap-3 border-b border-slate-800 px-4 py-2.5 text-left last:border-0 hover:bg-slate-800"
-              >
+              <button key={a.id} onClick={() => selectAnime(a)} className="result-row">
                 {a.coverImage.medium && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={a.coverImage.medium}
                     alt=""
-                    className="h-12 w-9 rounded object-cover"
+                    className="h-12 w-9 rounded-[3px] object-cover"
                   />
                 )}
                 <div className="min-w-0">
-                  <div className="truncate font-medium">{displayTitle(a)}</div>
-                  <div className="text-xs text-slate-500">
-                    {[a.format, a.seasonYear, a.episodes ? `${a.episodes} eps` : null]
+                  <div className="truncate text-[0.95rem]">{displayTitle(a)}</div>
+                  <div className="result-meta">
+                    {[a.format, a.seasonYear, a.episodes ? `${a.episodes} EP` : "airing"]
                       .filter(Boolean)
                       .join(" · ")}
                   </div>
@@ -313,198 +388,219 @@ export default function Home() {
         )}
       </div>
 
-      {/* Selected anime + episode */}
+      {/* ── empty state ── */}
+      {!anime && (
+        <div className="rise rise-2 mt-20 text-center">
+          <p className="show-title" style={{ color: "var(--paper-dim)" }}>
+            Nothing is spoiled yet.
+          </p>
+          <p className="mt-2 text-sm" style={{ color: "var(--mute)" }}>
+            Search your show, place your bookmark, ask freely.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-2">
+            {["Frieren", "Steins;Gate", "Vinland Saga"].map((s) => (
+              <button key={s} className="chip" onClick={() => setQuery(s)}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── selected show + boundary ── */}
       {anime && (
-        <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="flex items-center gap-4">
+        <section className="mt-10">
+          <div className="flex items-start gap-5">
             {anime.coverImage.medium && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={anime.coverImage.medium}
                 alt=""
-                className="h-20 w-14 rounded-lg object-cover"
+                className="h-24 w-[66px] rounded-[4px] object-cover"
+                style={{ boxShadow: "0 10px 30px rgba(0,0,0,.5)" }}
               />
             )}
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-lg font-semibold">
-                {displayTitle(anime)}
-              </h2>
-              <p className="text-xs text-slate-500">
-                {[
-                  anime.format,
-                  anime.seasonYear,
-                  anime.episodes ? `${anime.episodes} episodes` : "ongoing",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-              <p className="mt-1 text-xs">
+              <div className="eyebrow">
+                {[anime.format, anime.seasonYear].filter(Boolean).join(" · ")}
+              </div>
+              <h2 className="show-title mt-1">{displayTitle(anime)}</h2>
+              <div className="eyebrow mt-2">
                 {coverageLoading ? (
-                  <span className="text-slate-500">checking episode summaries…</span>
+                  "checking episode notes…"
                 ) : coverage && coverage.total > 0 ? (
-                  <span className="text-emerald-400">
-                    ✓ {coverage.total} episode summaries found
-                    {coverage.source ? ` (${coverage.source})` : ""}
-                  </span>
+                  <>
+                    <span className="lit">{coverage.total} episode notes</span>
+                    {" · "}
+                    {coverage.source}
+                  </>
                 ) : (
-                  <span className="text-amber-400">
-                    ⚠ No episode summaries found — answers will be very limited
+                  <span style={{ color: "var(--danger)" }}>
+                    no episode notes found — answers will stay cautious
                   </span>
                 )}
-              </p>
-            </div>
-            <div className="shrink-0 text-center">
-              <label className="block text-xs text-slate-500">I&apos;m on episode</label>
-              <input
-                type="number"
-                min={1}
-                max={maxEp}
-                value={episode}
-                onChange={(e) =>
-                  setEpisode(
-                    Math.max(1, Math.min(maxEp, parseInt(e.target.value || "1", 10)))
-                  )
-                }
-                className="mt-1 w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-center text-lg font-semibold outline-none focus:border-violet-500"
-              />
+              </div>
             </div>
           </div>
-        </div>
+
+          <div className="mt-7 flex items-end justify-between gap-4">
+            <div className="eyebrow">
+              Your bookmark · <span className="lit">episode {episode}</span>
+              {anime.episodes ? ` of ${anime.episodes}` : " (airing)"}
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={totalEpisodes}
+              value={episode}
+              onChange={(e) =>
+                setEpisode(
+                  Math.max(
+                    1,
+                    Math.min(totalEpisodes, parseInt(e.target.value || "1", 10))
+                  )
+                )
+              }
+              className="ep-num"
+              aria-label="Episode number"
+            />
+          </div>
+          <EpisodeBoundary
+            total={totalEpisodes}
+            episode={episode}
+            setEpisode={setEpisode}
+          />
+        </section>
       )}
 
-      {/* Q&A */}
+      {/* ── reading log ── */}
       {anime && (
-        <div className="mt-6">
-          <div ref={answerBoxRef} className="max-h-[50vh] space-y-4 overflow-y-auto">
-            {history.map((qa, i) => (
-              <div key={i}>
-                <div className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-sm bg-violet-600/90 px-4 py-2 text-sm">
-                  {qa.question}
-                </div>
-                <div className="mt-2 w-fit max-w-[90%] rounded-2xl rounded-bl-sm border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-relaxed">
-                  {qa.answer || (qa.streaming ? "…" : "")}
-                  {qa.streaming && qa.answer && (
-                    <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-violet-400 align-middle" />
-                  )}
-                  {!qa.streaming && qa.provider && qa.provider !== "none" && (
-                    <div className="mt-2 border-t border-slate-800 pt-1.5 text-[11px] text-slate-500">
-                      {qa.provider} · {qa.model} · grounded on {qa.summariesUsed}{" "}
-                      episode {qa.summariesUsed === 1 ? "summary" : "summaries"} (eps
-                      1–{episode})
-                    </div>
-                  )}
-                </div>
+        <section className="mt-12">
+          {history.length === 0 && (
+            <div className="mb-6">
+              <div className="eyebrow mb-3">Try asking</div>
+              <div className="flex flex-wrap gap-2">
+                {STARTERS.map((s) => (
+                  <button key={s} className="chip" onClick={() => ask(s)} disabled={asking}>
+                    {s}
+                  </button>
+                ))}
               </div>
-            ))}
-          </div>
-
-          {askError && (
-            <div className="mt-3 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
-              {askError}
             </div>
           )}
 
-          <div className="mt-4 flex gap-2">
+          {history.map((qa, i) => (
+            <article key={i} className="qa">
+              <div className="eyebrow">
+                You · <span className="lit">EP {qa.episode}</span>
+              </div>
+              <h3 className="qa-q">{qa.question}</h3>
+              <div className="qa-a">
+                {renderAnswer(qa.answer)}
+                {qa.streaming && qa.answer && <span className="caret" aria-hidden />}
+                {qa.streaming && !qa.answer && (
+                  <span className="patience">
+                    <span className="lamp-dot" aria-hidden />
+                    reading episodes 1–{qa.episode}… local models take a minute or two
+                  </span>
+                )}
+              </div>
+              {!qa.streaming && qa.provider && qa.provider !== "none" && (
+                <div className="qa-meta">
+                  grounded on {qa.summariesUsed} episode{" "}
+                  {qa.summariesUsed === 1 ? "note" : "notes"} · {qa.model}
+                </div>
+              )}
+            </article>
+          ))}
+          <div ref={logEndRef} />
+
+          {askError && <div className="err mt-5">{askError}</div>}
+
+          <div className="mt-8 flex gap-2">
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && ask()}
-              placeholder={`Ask about ${displayTitle(anime)} (up to ep ${episode})…`}
+              placeholder={`Ask anything up to episode ${episode}…`}
               disabled={asking}
-              className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 placeholder-slate-500 outline-none focus:border-violet-500 disabled:opacity-50"
+              className="search-input"
             />
             <button
-              onClick={ask}
+              onClick={() => ask()}
               disabled={asking || !question.trim()}
-              className="rounded-xl bg-violet-600 px-5 py-3 font-medium transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="ask-btn"
             >
-              {asking ? "…" : "Ask"}
+              {asking ? "Reading…" : "Ask"}
             </button>
           </div>
-          <p className="mt-2 text-xs text-slate-600">
-            Questions like &quot;Who is X?&quot;, &quot;Why did Y happen?&quot;, or
-            &quot;Does Z ever fight again?&quot; — spoiler-safe up to episode{" "}
-            {episode}.
-          </p>
-        </div>
+        </section>
       )}
 
-      {/* Community reactions */}
+      {/* ── beyond the veil: community ── */}
       {anime && (
-        <div className="mt-8">
+        <section className="mt-14">
           {!commentsOpen ? (
-            <button
-              onClick={loadComments}
-              className="w-full rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-4 py-3 text-sm text-slate-400 transition hover:border-violet-600 hover:text-slate-200"
-            >
-              💬 Show community reactions for episode {episode}{" "}
-              <span className="text-amber-500">(may contain spoilers)</span>
+            <button onClick={loadComments} className="fold">
+              <span className="eyebrow" style={{ color: "var(--paper-dim)" }}>
+                Beyond the veil
+              </span>
+              <div className="mt-1 text-sm">
+                Community reactions to episode {episode} — unfiltered threads,
+                spoilers possible. Comments stay blurred until you tap them.
+              </div>
             </button>
           ) : (
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-semibold">
-                  Episode {episode} — community reactions
-                </h3>
+            <div className="cold-panel">
+              <div className="flex items-baseline justify-between">
+                <div className="eyebrow">Episode {episode} · community</div>
                 <button
                   onClick={() => setCommentsOpen(false)}
-                  className="text-xs text-slate-500 hover:text-slate-300"
+                  className="eyebrow"
+                  style={{ color: "var(--mute)" }}
                 >
-                  hide
+                  close
                 </button>
               </div>
 
               {commentsLoading && (
-                <p className="text-sm text-slate-500">loading threads…</p>
+                <p className="patience mt-4">
+                  <span className="lamp-dot" aria-hidden />
+                  finding threads…
+                </p>
               )}
 
               {!commentsLoading && comments && (
-                <div className="space-y-4">
-                  {/* MAL */}
+                <div className="mt-4 space-y-6">
                   <div>
-                    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-400">
-                      MyAnimeList
-                    </h4>
+                    <div className="eyebrow mb-2">MyAnimeList</div>
                     {comments.mal ? (
                       <a
                         href={comments.mal.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="block rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm transition hover:border-sky-700"
+                        className="quiet text-sm"
                       >
-                        <span className="text-sky-300">{comments.mal.title}</span>
-                        <span className="ml-2 text-xs text-slate-500">
-                          {comments.mal.comments != null
-                            ? `${comments.mal.comments} comments — `
-                            : ""}
-                          open thread ↗
-                        </span>
+                        {comments.mal.title}
+                        {comments.mal.comments != null
+                          ? ` · ${comments.mal.comments} comments`
+                          : ""}{" "}
+                        ↗
                       </a>
                     ) : (
-                      <p className="text-sm text-slate-500">
-                        No MAL episode discussion found.
-                        {comments.malError ? ` (${comments.malError})` : ""}
+                      <p className="text-sm" style={{ color: "var(--mute)" }}>
+                        No discussion thread found for this episode.
                       </p>
                     )}
                   </div>
 
-                  {/* Reddit */}
                   <div>
-                    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-orange-400">
-                      Reddit r/anime
-                    </h4>
+                    <div className="eyebrow mb-2">Reddit · r/anime</div>
                     {!comments.redditEnabled ? (
-                      <p className="text-sm text-slate-500">
-                        Reddit is off — add{" "}
-                        <code className="rounded bg-slate-800 px-1">
-                          REDDIT_CLIENT_ID
-                        </code>{" "}
-                        and{" "}
-                        <code className="rounded bg-slate-800 px-1">
-                          REDDIT_CLIENT_SECRET
-                        </code>{" "}
-                        to <code className="rounded bg-slate-800 px-1">.env.local</code>{" "}
-                        and it activates automatically.
+                      <p className="text-sm" style={{ color: "var(--mute)" }}>
+                        Reddit is off. Add REDDIT_CLIENT_ID and
+                        REDDIT_CLIENT_SECRET to .env.local and it turns on by
+                        itself.
                       </p>
                     ) : comments.reddit ? (
                       <div>
@@ -512,20 +608,23 @@ export default function Home() {
                           href={comments.reddit.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-sm text-orange-300 hover:underline"
+                          className="quiet text-sm"
                         >
                           {comments.reddit.title} ↗
                         </a>
-                        <div className="mt-2 space-y-2">
+                        <div className="mt-2">
                           {comments.reddit.comments.map((c, i) => (
-                            <div
-                              key={i}
-                              className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm"
-                            >
-                              <div className="mb-1 text-xs text-slate-500">
+                            <div key={i} className="comment">
+                              <div className="comment-meta">
                                 u/{c.author} · {c.score} points
                               </div>
-                              <div className="whitespace-pre-wrap text-slate-300">
+                              <div
+                                className={`comment-body text-sm${revealed.has(i) ? " revealed" : ""}`}
+                                title={revealed.has(i) ? undefined : "Tap to reveal"}
+                                onClick={() =>
+                                  setRevealed((r) => new Set(r).add(i))
+                                }
+                              >
                                 {c.body}
                               </div>
                             </div>
@@ -533,9 +632,8 @@ export default function Home() {
                         </div>
                       </div>
                     ) : (
-                      <p className="text-sm text-slate-500">
-                        No matching Reddit discussion thread found.
-                        {comments.redditError ? ` (${comments.redditError})` : ""}
+                      <p className="text-sm" style={{ color: "var(--mute)" }}>
+                        No matching discussion thread found for this episode.
                       </p>
                     )}
                   </div>
@@ -543,17 +641,7 @@ export default function Home() {
               )}
             </div>
           )}
-        </div>
-      )}
-
-      {!anime && (
-        <div className="mt-16 text-center text-sm text-slate-600">
-          <p>Pick an anime and the episode you&apos;re on to get started.</p>
-          <p className="mt-1">
-            Answers are grounded only on episodes you&apos;ve already seen — the
-            model literally never sees what comes after.
-          </p>
-        </div>
+        </section>
       )}
     </main>
   );
