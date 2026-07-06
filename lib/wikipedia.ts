@@ -1,7 +1,7 @@
 import { cached, DAYS } from "./cache";
 
 const API = "https://en.wikipedia.org/w/api.php";
-const USER_AGENT = "Shiori/0.1 (spoiler-safe anime companion; local dev)";
+const USER_AGENT = "Shiori/0.1 (spoiler-safe episode companion; local dev)";
 
 export interface EpisodeSummary {
   episode: number;
@@ -168,13 +168,15 @@ function parseEpisodeList(wikitext: string): EpisodeSummary[] {
 /** Season/sublist pages referenced by a parent episode-list page. */
 function findLinkedEpisodePages(wikitext: string): string[] {
   const pages = new Set<string>();
-  // Transclusions like {{:List of X episodes (season 1)}}
+  // Transclusions like {{:List of X episodes (season 1)}} or {{:X season 1}}
   for (const m of wikitext.matchAll(/\{\{\s*:\s*([^{}|]+?)\s*\}\}/g)) {
-    if (/episodes/i.test(m[1])) pages.add(m[1].trim());
+    if (/episodes|season/i.test(m[1])) pages.add(m[1].trim());
   }
   // {{Main|List of X episodes (season 1)}} style pointers
   for (const m of wikitext.matchAll(/\{\{\s*Main(?:\s*article)?\s*\|([^{}]+)\}\}/gi)) {
     for (const target of m[1].split("|")) {
+      // Skip named params like label1=... — they aren't page titles.
+      if (target.includes("=")) continue;
       if (/episodes|season/i.test(target)) pages.add(target.trim());
     }
   }
@@ -185,17 +187,18 @@ async function episodesFromPage(page: string): Promise<EpisodeSummary[]> {
   const wikitext = await getWikitext(page);
   if (!wikitext) return [];
 
-  let episodes = parseEpisodeList(wikitext);
+  const inline = parseEpisodeList(wikitext);
+  const linked = findLinkedEpisodePages(wikitext);
 
-  // Hub pages often just point at per-season pages — follow those.
-  if (episodes.length === 0) {
-    const linked = findLinkedEpisodePages(wikitext);
-    for (const sub of linked) {
-      const subText = await getWikitext(sub);
-      if (subText) episodes = episodes.concat(parseEpisodeList(subText));
-    }
+  let fromLinked: EpisodeSummary[] = [];
+  for (const sub of linked) {
+    const subText = await getWikitext(sub);
+    if (subText) fromLinked = fromLinked.concat(parseEpisodeList(subText));
   }
-  return episodes;
+
+  // Hub pages transclude per-season pages; inline entries on a hub are
+  // usually specials/webisodes. Prefer whichever parse found the real list.
+  return fromLinked.length > inline.length ? fromLinked : inline;
 }
 
 function dedupeAndSort(episodes: EpisodeSummary[]): EpisodeSummary[] {

@@ -1,31 +1,48 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 export interface LLMInfo {
-  provider: "anthropic" | "ollama";
+  provider: "gemini" | "anthropic" | "ollama";
   model: string;
 }
 
+const GEMINI_DEFAULT_MODEL = "gemini-2.5-flash";
+const ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-8";
+const OLLAMA_DEFAULT_MODEL = "qwen3.5:27b";
+
 /**
- * Provider selection: LLM_PROVIDER=anthropic|ollama forces one;
- * "auto" (default) uses Anthropic whenever ANTHROPIC_API_KEY is set,
- * otherwise falls back to local Ollama.
+ * Provider selection: LLM_PROVIDER=gemini|anthropic|ollama forces one;
+ * "auto" (default) picks by key presence — Gemini (the hosted-site
+ * default per the plan), then Anthropic, then local Ollama.
  */
 export function resolveLLM(): LLMInfo {
   const forced = (process.env.LLM_PROVIDER ?? "auto").toLowerCase();
+  const hasGeminiKey = !!process.env.GEMINI_API_KEY?.trim();
   const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY?.trim();
 
-  const useAnthropic =
-    forced === "anthropic" || (forced !== "ollama" && hasAnthropicKey);
+  const provider: LLMInfo["provider"] =
+    forced === "gemini" || forced === "anthropic" || forced === "ollama"
+      ? forced
+      : hasGeminiKey
+        ? "gemini"
+        : hasAnthropicKey
+          ? "anthropic"
+          : "ollama";
 
-  if (useAnthropic) {
+  if (provider === "gemini") {
     return {
-      provider: "anthropic",
-      model: process.env.ANTHROPIC_MODEL?.trim() || "claude-opus-4-8",
+      provider,
+      model: process.env.GEMINI_MODEL?.trim() || GEMINI_DEFAULT_MODEL,
+    };
+  }
+  if (provider === "anthropic") {
+    return {
+      provider,
+      model: process.env.ANTHROPIC_MODEL?.trim() || ANTHROPIC_DEFAULT_MODEL,
     };
   }
   return {
-    provider: "ollama",
-    model: process.env.OLLAMA_MODEL?.trim() || "qwen3.5:27b",
+    provider,
+    model: process.env.OLLAMA_MODEL?.trim() || OLLAMA_DEFAULT_MODEL,
   };
 }
 
@@ -66,6 +83,77 @@ function anthropicStream(
           encoder.encode(`\n\n[Anthropic error: ${(err as Error).message}]`)
         );
         controller.close();
+      }
+    },
+  });
+}
+
+function geminiStream(
+  model: string,
+  system: string,
+  messages: ChatMessage[]
+): ReadableStream<Uint8Array> {
+  const key = process.env.GEMINI_API_KEY?.trim() ?? "";
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+  const payload = JSON.stringify({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: messages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    })),
+  });
+
+  return new ReadableStream({
+    async start(controller) {
+      const fail = (message: string) => {
+        controller.enqueue(encoder.encode(`[Gemini error: ${message}]`));
+        controller.close();
+      };
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key,
+          },
+          body: payload,
+        });
+        if (!res.ok || !res.body) {
+          const body = await res.text().catch(() => "");
+          return fail(`request failed (${res.status}). ${body.slice(0, 200)}`);
+        }
+
+        // SSE: "data: {json}" lines, text in candidates[].content.parts[].text.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data || data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+              for (const part of parts) {
+                if (part.text) controller.enqueue(encoder.encode(part.text));
+              }
+            } catch {
+              // ignore partial/garbled lines
+            }
+          }
+        }
+        controller.close();
+      } catch (err) {
+        fail((err as Error).message);
       }
     },
   });
@@ -170,8 +258,10 @@ export function streamAnswer(
 ): { info: LLMInfo; stream: ReadableStream<Uint8Array> } {
   const info = resolveLLM();
   const stream =
-    info.provider === "anthropic"
-      ? anthropicStream(info.model, system, messages)
-      : ollamaStream(info.model, system, messages);
+    info.provider === "gemini"
+      ? geminiStream(info.model, system, messages)
+      : info.provider === "anthropic"
+        ? anthropicStream(info.model, system, messages)
+        : ollamaStream(info.model, system, messages);
   return { info, stream };
 }
