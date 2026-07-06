@@ -318,6 +318,11 @@ body {
   transition: border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
 .chip:hover { border-color: var(--lamp-deep); color: var(--lamp); transform: translateY(-1px); }
+.chip.on {
+  border-color: var(--lamp-deep);
+  color: var(--lamp);
+  background: rgba(229, 164, 74, 0.08);
+}
 
 /* ── beyond the veil (community) ────────────────────────── */
 .fold {

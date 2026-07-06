@@ -18,6 +18,8 @@ export interface ShowResult {
   year: number | null;
   format: string | null;
   image: string | null;
+  /** Season structure (TMDB only) — absolute episode numbering maps onto this. */
+  seasons: { seasonNumber: number; episodeCount: number }[] | null;
 }
 
 function normalizeTitle(t: string): string {
@@ -45,6 +47,8 @@ export async function searchShows(query: string): Promise<ShowResult[]> {
           year: a.seasonYear,
           format: a.format,
           image: a.coverImage.medium,
+          // Anime seasons live as separate AniList entries — no season layer.
+          seasons: null,
         }))
       : [];
 
@@ -65,6 +69,7 @@ export async function searchShows(query: string): Promise<ShowResult[]> {
           year: t.year,
           format: "TV",
           image: t.image,
+          seasons: t.seasons?.length ? t.seasons : null,
         }))
       : [];
 

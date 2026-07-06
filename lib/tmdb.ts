@@ -11,6 +11,7 @@ export interface TmdbShow {
   image: string | null;
   /** Best-effort: Japanese animation on TMDB is almost certainly also on AniList. */
   looksLikeAnime: boolean;
+  seasons: TmdbSeason[];
 }
 
 export interface TmdbSeason {
@@ -100,6 +101,7 @@ export async function searchTv(query: string): Promise<TmdbShow[]> {
         image: h.poster_path ? `https://image.tmdb.org/t/p/w154${h.poster_path}` : null,
         looksLikeAnime:
           h.original_language === "ja" && h.genre_ids.includes(ANIMATION_GENRE),
+        seasons: d?.seasons ?? [],
       };
     });
   });

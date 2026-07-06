@@ -14,6 +14,7 @@ interface ShowResult {
   year: number | null;
   format: string | null;
   image: string | null;
+  seasons: { seasonNumber: number; episodeCount: number }[] | null;
 }
 
 interface Coverage {
@@ -69,21 +70,26 @@ function renderAnswer(text: string) {
 /** The bookmark boundary: lit episodes you've seen, veiled ones you haven't. */
 function EpisodeBoundary({
   total,
+  offset = 0,
   episode,
   setEpisode,
+  label = (n) => `Episode ${n}`,
 }: {
   total: number;
+  /** Absolute episode number just before the first tick shown (season start). */
+  offset?: number;
   episode: number;
   setEpisode: (n: number) => void;
+  label?: (n: number) => string;
 }) {
   if (total <= 60) {
     return (
       <div className="strip" role="group" aria-label="Set your episode">
-        {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
+        {Array.from({ length: total }, (_, i) => offset + i + 1).map((n) => (
           <button
             key={n}
-            title={`Episode ${n}`}
-            aria-label={`Episode ${n}`}
+            title={label(n)}
+            aria-label={label(n)}
             aria-pressed={n === episode}
             onClick={() => setEpisode(n)}
             className={`tick${n <= episode ? " lit" : ""}${n === episode ? " here" : ""}`}
@@ -92,7 +98,7 @@ function EpisodeBoundary({
       </div>
     );
   }
-  const pct = (episode / total) * 100;
+  const pct = (Math.min(Math.max(episode - offset, 0), total) / total) * 100;
   return (
     <div className="bar-wrap">
       <div className="bar">
@@ -100,9 +106,9 @@ function EpisodeBoundary({
       </div>
       <input
         type="range"
-        min={1}
-        max={total}
-        value={episode}
+        min={offset + 1}
+        max={offset + total}
+        value={Math.min(Math.max(episode, offset + 1), offset + total)}
         onChange={(e) => setEpisode(parseInt(e.target.value, 10))}
         className="bar-range"
         aria-label="Set your episode"
@@ -323,8 +329,43 @@ export default function Home() {
     }
   }, [show, episode, comments, commentsLoading]);
 
-  const totalEpisodes =
-    show?.episodes ?? Math.max(coverage?.maxEpisode ?? 0, episode, 12);
+  // Season layer (TMDB shows with >1 season). Episode numbering stays
+  // absolute everywhere — seasons are a view over it.
+  const seasons =
+    show?.seasons && show.seasons.length > 1 ? show.seasons : null;
+  const seasonStarts: number[] = [];
+  if (seasons) {
+    let acc = 0;
+    for (const s of seasons) {
+      seasonStarts.push(acc);
+      acc += s.episodeCount;
+    }
+  }
+  const seasonIdx = seasons
+    ? Math.max(
+        0,
+        seasons.findLastIndex((_, i) => episode > seasonStarts[i])
+      )
+    : -1;
+  const currentSeason = seasons ? seasons[seasonIdx] : null;
+  const seasonOffset = seasons ? seasonStarts[seasonIdx] : 0;
+
+  const epLabel = useCallback(
+    (n: number) => {
+      if (!seasons) return `episode ${n}`;
+      let acc = 0;
+      for (const s of seasons) {
+        if (n <= acc + s.episodeCount) return `S${s.seasonNumber} · E${n - acc}`;
+        acc += s.episodeCount;
+      }
+      return `episode ${n}`;
+    },
+    [seasons]
+  );
+
+  const totalEpisodes = seasons
+    ? seasonStarts[seasons.length - 1] + seasons[seasons.length - 1].episodeCount
+    : show?.episodes ?? Math.max(coverage?.maxEpisode ?? 0, episode, 12);
 
   const suggestions = health?.tmdbEnabled
     ? ["Frieren", "Breaking Bad", "Severance", "Vinland Saga"]
@@ -459,32 +500,53 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-7 flex items-end justify-between gap-4">
+          {seasons && (
+            <div className="mt-7 flex flex-wrap gap-2" role="group" aria-label="Season">
+              {seasons.map((s, i) => (
+                <button
+                  key={s.seasonNumber}
+                  className={`chip${i === seasonIdx ? " on" : ""}`}
+                  aria-pressed={i === seasonIdx}
+                  onClick={() => i !== seasonIdx && setEpisode(seasonStarts[i] + 1)}
+                >
+                  Season {s.seasonNumber}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className={`${seasons ? "mt-4" : "mt-7"} flex items-end justify-between gap-4`}>
             <div className="eyebrow">
-              Your bookmark · <span className="lit">episode {episode}</span>
-              {show.episodes ? ` of ${show.episodes}` : " (ongoing)"}
+              Your bookmark · <span className="lit">{epLabel(episode)}</span>
+              {seasons
+                ? ` · ${episode} of ${totalEpisodes} overall`
+                : show.episodes
+                  ? ` of ${show.episodes}`
+                  : " (ongoing)"}
             </div>
             <input
               type="number"
               min={1}
-              max={totalEpisodes}
-              value={episode}
-              onChange={(e) =>
+              max={currentSeason ? currentSeason.episodeCount : totalEpisodes}
+              value={episode - seasonOffset}
+              onChange={(e) => {
+                const max = currentSeason
+                  ? currentSeason.episodeCount
+                  : totalEpisodes;
                 setEpisode(
-                  Math.max(
-                    1,
-                    Math.min(totalEpisodes, parseInt(e.target.value || "1", 10))
-                  )
-                )
-              }
+                  seasonOffset +
+                    Math.max(1, Math.min(max, parseInt(e.target.value || "1", 10)))
+                );
+              }}
               className="ep-num"
-              aria-label="Episode number"
+              aria-label={currentSeason ? "Episode number within season" : "Episode number"}
             />
           </div>
           <EpisodeBoundary
-            total={totalEpisodes}
+            total={currentSeason ? currentSeason.episodeCount : totalEpisodes}
+            offset={seasonOffset}
             episode={episode}
             setEpisode={setEpisode}
+            label={epLabel}
           />
         </section>
       )}
@@ -508,7 +570,7 @@ export default function Home() {
           {history.map((qa, i) => (
             <article key={i} className="qa">
               <div className="eyebrow">
-                You · <span className="lit">EP {qa.episode}</span>
+                You · <span className="lit">{seasons ? epLabel(qa.episode) : `EP ${qa.episode}`}</span>
               </div>
               <h3 className="qa-q">{qa.question}</h3>
               <div className="qa-a">
@@ -538,7 +600,7 @@ export default function Home() {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && ask()}
-              placeholder={`Ask anything up to episode ${episode}…`}
+              placeholder={`Ask anything up to ${epLabel(episode)}…`}
               disabled={asking}
               className="search-input"
             />
