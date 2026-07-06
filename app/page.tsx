@@ -356,7 +356,7 @@ export default function Home() {
       </header>
 
       {/* ── search ── */}
-      <div className="rise rise-1 relative mt-9">
+      <div className="rise rise-1 relative z-30 mt-9">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}

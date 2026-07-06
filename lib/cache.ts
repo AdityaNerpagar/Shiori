@@ -29,8 +29,12 @@ export async function cached<T>(
   }
 
   const value = await fetcher();
-  await mkdir(CACHE_DIR, { recursive: true });
-  await writeFile(file, JSON.stringify({ expires: Date.now() + ttlMs, value }));
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(file, JSON.stringify({ expires: Date.now() + ttlMs, value }));
+  } catch {
+    // read-only filesystem (e.g. serverless) — serve the value uncached
+  }
   return value;
 }
 
