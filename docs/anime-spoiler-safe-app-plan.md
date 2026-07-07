@@ -281,3 +281,128 @@ The consumer UI ignores it. The research UI renders it. The logging layer option
 ### Why this doesn't slow the app down
 
 Everything research-facing is either (a) a byproduct the consumer path already produces (the trace), (b) a feature that helps users too (snapshots, model choice), or (c) a separate opt-in surface built *after* the app works. The app ships first; the research layer grows on top without ever getting in a viewer's way.
+
+---
+
+## 12. Ownership & future optionality
+
+Open sourcing the project does **not** give away ownership or prevent a future sale — it just changes what a buyer would be buying. Worth setting up cleanly now so no doors close accidentally.
+
+### The core facts
+
+- **You keep ownership.** Releasing under a license (MIT/Apache) makes you the copyright holder who *granted a license* — you can still sell, relicense your own code, or offer a commercial version later. Open source and sellable are not opposites.
+- **What's public stays public.** You can't claw back released code; anyone can fork what exists under the license granted. So a buyer can't purchase *exclusivity over the current code* — that's already out.
+- **A sale is therefore about what's *not* in the repo:** you (your continued work/roadmap), the brand + users + hosted instance + domain, the trademarked name, any future closed-source work, and potentially the dataset.
+- **Forking rarely destroys value.** A fork is just code — no users, reputation, momentum, or you. That's why acquirers buy projects instead of forking them. It does *cap* the price (no monopoly to sell), which is a trade already made by choosing open source — and the right one for a trust-based companion app.
+
+### Cheap moves that preserve optionality (do these)
+
+1. **Keep copyright ownership clean.** As sole author you hold all rights. If you accept outside contributions, use a lightweight **Contributor License Agreement (CLA)** or Developer Certificate of Origin so you retain the ability to relicense. *If many contributors own scattered pieces, you cannot take a future version closed or sell cleanly without every one of them agreeing — the most common way OSS projects accidentally make themselves unsellable.*
+2. **Hold the name and domain personally.** Cheap, and often the single most valuable transferable asset. Consider keeping the project **name/trademark** even if the code is open — forkers can copy code but not the identity.
+3. **Keep the dataset as a distinct asset.** Its value is as an *open, cited* research artifact; treat it separately from the app code either way.
+
+### Bottom line
+
+A life-changing acquisition is unlikely for a niche hobby project (true open source or not). But a modest "come work on this / we'll take it over" offer is entirely possible if it grows — and open sourcing forecloses none of it, as long as copyright, name, and domain stay cleanly yours. Build it open, keep ownership tidy, and the option to sell stays alive without compromising the trusted-companion mission today.
+
+---
+
+## 13. Community features & free-at-scale design
+
+For this app, **community features and cost-control are the same lever.** Crowdsourcing builds the community *and* removes your costs; caching drives retention-friendly speed *and* removes your costs. Designed right, the app has **inverted unit economics** — cost per user *falls* as it grows.
+
+### The free-at-scale engine (why it gets cheaper per user, not more expensive)
+
+The core trick, borrowed from DoesTheDogDie's crowdsourced model: **do expensive work once, then serve it to everyone for free.**
+
+- **Cache every answer** by (show, episode, normalized question). The 100th person asking "who is the masked figure?" about episode 5 of a popular show gets a cached answer — **zero LLM cost**. As the user base grows, the cache-hit rate *rises*, so the marginal LLM cost per user trends toward zero. This is the single most important economic property: popular content pays its LLM cost once.
+- **Crowdsourced content = $0 content cost.** Users contribute reactions, corrections, and coverage; the community does the labor once and everyone benefits.
+- **Cache third-party data** (episode summaries, TMDB/AniList responses) once per show/episode — never re-fetch.
+- **Net effect:** the thing that would grow with scale (LLM calls) is exactly the thing caching flattens. Costs scale sub-linearly with users.
+
+### Community features (borrowed from the landscape, adapted)
+
+**Group A — the return loop (retention):**
+- **Per-episode reaction feed** — the retention engine. A spoiler-safe reason to open the app *after every episode*. This is the highest-leverage community feature; prioritize it.
+- **"Currently watching" + episode progress** — a personalized home and a reason to come back each episode. Cheap (a few DB rows per user).
+- **Safe weekly discussion threads** per currently-airing show.
+
+**Group B — crowdsourcing (engagement + cost reduction, the DoesTheDogDie core):**
+- **Community-verified answers** — upvote/downvote and flag spoilers or wrong answers. This *improves the cached answers for free*, turning the community into your QA team.
+- **"Add a show" / "improve this summary"** contributions — expands coverage without your labor, and grows exactly the corpus that reduces LLM reliance.
+- **Crowd yes/no "does X happen?" checks**, episode-bounded — cheap, cache-friendly, low-LLM, and directly modeled on DoesTheDogDie's free crowdsourced answers.
+- **Spoiler-safe descriptions as a craft** — their "know it's coming, no details" style, applied per episode.
+- **Contributor reputation / trusted-user tiers** — status reward that doubles as near-free moderation (see below).
+
+**Group C — status & light gamification (from the quiz apps):**
+- **Profiles and badges** (including a supporter/contributor badge).
+- **Contributor leaderboards** — rank by helpful contributions, not just activity.
+- **Streaks and "shows completed"** — light habit mechanics, cheap to run.
+- **Per-show hub pages** — a home for each series' safe discussion and crowd answers.
+- **Shareable artifacts** — "the most-confusing episodes," spoiler-anxiety heatmaps per show. These are *free marketing*: people post and link them back.
+
+**Group D — trust signals (the donation drivers):**
+- **No ads, ever** — stated plainly and kept.
+- **Open source and transparent** — anyone can verify the app is honest.
+- **"Supported by donations"** visible, with a clear, human mission.
+
+### Funding without running cost (DoesTheDogDie template, adapted)
+
+- **Core stays free forever**, powered by crowdsourcing + cache.
+- **Optional supporter tier** whose perks cost you ~$0 to provide: a badge, voting on the roadmap, priority on show/feature requests, early access to new features, and (optionally) bring-your-own-key for unlimited questions. Perks are **status and access, not compute**, so they never add cost.
+- **No ads** — protects trust and keeps ad-network trackers off a privacy-friendly app.
+
+### The one real scaling cost — moderation — and how to keep it near-free
+
+DoesTheDogDie *pays* moderators; a hobby project can't and shouldn't. Keep the human load minimal by design:
+- **Community flagging** with **auto-collapse** of flagged content.
+- **Trusted-contributor tiers** who earn light mod powers as a *status reward* (free labor that people want).
+- **Defer native moderation entirely** in early phases: while comments are pulled from Reddit (already moderated there), you inherit their moderation — your own load doesn't begin until native threads arrive in Phase 4.
+- Lightweight admin tools over anything fancy.
+
+### Caching-first discipline (the rule that keeps it free)
+
+1. **Never call the LLM if a cached answer exists** for (show, episode, normalized question).
+2. **Cache all summaries and API responses** per show/episode.
+3. **Per-user daily question cap** to bound worst-case cost and abuse.
+4. **Serve popular/static content via CDN** where possible.
+
+Follow these four and the free tiers (Gemini + hosting + managed Postgres) comfortably absorb a large, growing user base — because the users themselves, through contributions and cache hits, are doing the expensive work once and sharing it.
+
+---
+
+## 14. Caching model & feedback
+
+### Caching model (shared, but episode-scoped)
+
+The cache is **global across all users** — that's what makes the economics work — but it must be **strictly partitioned by episode boundary**, because that partition is also a safety boundary.
+
+**The cache keys:**
+- **Episode summaries** (grounding text): keyed by `(show, episode)`. Fetched once from Wikipedia/etc., reused for everyone forever. Pure win, no subtlety.
+- **Answers:** keyed by `(show, episode, normalized_question)`. Shared across all users *at that episode*.
+- **User progress / "currently watching":** per-user, never shared. The only genuinely personal data, and tiny.
+
+**The safety rule (do not get this wrong):**
+- ✅ Key = `(show, episode, question)` → the episode-5 answer is only ever served to people at episode 5. Someone at episode 3 gets a different entry, bounded to episode 3.
+- ❌ Key = `(show, question)`, dropping episode → whoever asks first sets the answer for everyone. If they were on episode 20, you'd serve spoiler-laden episode-20 answers to someone on episode 3. **The cache becomes a spoiler-delivery machine.**
+
+The same question at episode 5 and episode 12 are **two separate cache entries** — they legitimately have different safe answers. This is the one place where "share to save money" and "never spoil" could collide; the episode-scoped key keeps them aligned.
+
+**Question normalization:** "Who's the masked guy?" and "who is that man in the mask?" are the same question but won't match as raw strings. Normalize (lowercase + strip filler, or better, embedding-similarity match on meaning) so semantically identical questions hit one entry. More normalization → higher hit rate → lower cost, with a small risk of collapsing two *slightly* different questions, so tune conservatively.
+
+### Feedback (two levels, both feeding the cache and the research layer)
+
+Feedback is how a *shared* answer gets corrected once and fixed for everyone — it's the community QA layer on top of the cache, and it doubles as labeled data for the research benchmark.
+
+**Question-level feedback** (on each individual answer):
+- Lightweight signals: 👍/👎, plus targeted flags — **"this spoiled me,"** "wrong," "didn't answer my question," "too vague."
+- **The "this spoiled me" flag is the most important control in the whole app.** It catches spoiler leaks the automated metric misses, quarantines the offending cached answer (auto-collapse pending review), and feeds directly into the leak dataset in Section 11.
+- A corrected answer replaces the cached entry → **fixed once, fixed for everyone.** The cache becomes a crowd-improved knowledge base that gets better as more people use it.
+
+**System-level feedback** (on the app as a whole):
+- General thumbs/rating, feature requests, "show missing / coverage thin here," bug reports, and a free-text channel.
+- Feeds the roadmap (and supporter-tier voting from Section 13).
+
+**Why this compounds:** every piece of feedback improves three things at once — the cached answer quality (cheaper + safer), the community's sense of ownership (engagement + donations), and the research dataset (labeled leaks and quality judgments). Feedback is where the cache, the community, and the research layer all reinforce each other.
+
+**Keep it near-free:** feedback is a few DB rows and some flag-count thresholds — no added compute. Auto-collapse on flag-count keeps moderation load low (ties into Section 13's near-free moderation).
