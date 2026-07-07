@@ -324,6 +324,43 @@ body {
   background: rgba(229, 164, 74, 0.08);
 }
 
+/* ── companions ─────────────────────────────────────────── */
+.persona-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.24rem 0.85rem 0.24rem 0.3rem;
+}
+.persona-chip img {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  filter: saturate(0.75) brightness(0.92);
+  transition: filter 0.15s ease, border-color 0.15s ease;
+}
+.persona-chip:hover img,
+.persona-chip.on img {
+  filter: none;
+  border-color: var(--lamp-deep);
+}
+.persona-full {
+  height: 13.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.qa-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--lamp-deep);
+}
+
 /* ── beyond the veil (community) ────────────────────────── */
 .fold {
   width: 100%;

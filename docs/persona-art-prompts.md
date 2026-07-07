@@ -136,3 +136,16 @@ wrapped in a beige blanket like a cape, hugging a pillow to his chest, a
 box of tissues within reach — clearly ready to cry at the good parts and
 not ashamed. Soft socks, mug of cocoa on the floor beside him, faint
 happy tears at the corners of his eyes.
+
+
+
+> Anime illustration, elegant semi-realistic anime style, clean line art,
+> soft cel shading, cinematic warm rim lighting. Single adult character
+> in their twenties. Setting: a quiet night room, background a deep dark
+> navy-ink (#0c101a), near-black, softly vignetted. The only light source
+> is a warm amber reading lamp glow (#e5a44a) from the upper side, giving
+> warm paper-cream (#ece7da) highlights on skin and hair edges. Cozy,
+> intimate, late-night library mood. Muted refined palette, high detail
+> on face and hair, no text, no watermark, no logo, no border.
+**Sizes.** Portrait: square 1:1, face filling ~70% of the frame (the UI
+crops these small). Full body: 2:3 or 9:16 tall.

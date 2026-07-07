@@ -35,6 +35,8 @@ interface QA {
   episode: number;
   /** Companion who answered (display name, at ask time). */
   persona: string;
+  /** Companion id, for the avatar image. */
+  personaId: string;
 }
 
 interface CommentsData {
@@ -259,6 +261,7 @@ export default function Home() {
         streaming: true,
         episode,
         persona: activePersona.name,
+        personaId: activePersona.id,
       };
       // Follow-up context: completed exchanges asked at or below the current
       // episode (an answer given at a higher episode could leak backwards).
@@ -579,24 +582,37 @@ export default function Home() {
       {/* ── reading log ── */}
       {show && (
         <section className="mt-12">
-          <div className="mb-6">
-            <div className="eyebrow mb-3">
-              Watching with · <span className="lit">{activePersona.name}</span>,{" "}
-              {activePersona.vibe}
+          <div className="mb-6 flex items-start justify-between gap-6">
+            <div className="min-w-0">
+              <div className="eyebrow mb-3">
+                Watching with · <span className="lit">{activePersona.name}</span>,{" "}
+                {activePersona.vibe}
+              </div>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Companion voice">
+                {PERSONAS.map((p) => (
+                  <button
+                    key={p.id}
+                    className={`chip persona-chip${p.id === personaId ? " on" : ""}`}
+                    aria-pressed={p.id === personaId}
+                    title={p.vibe}
+                    onClick={() => pickPersona(p.id)}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/personas/${p.id}.webp`} alt="" />
+                    {p.name}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Companion voice">
-              {PERSONAS.map((p) => (
-                <button
-                  key={p.id}
-                  className={`chip${p.id === personaId ? " on" : ""}`}
-                  aria-pressed={p.id === personaId}
-                  title={p.vibe}
-                  onClick={() => pickPersona(p.id)}
-                >
-                  {p.name}
-                </button>
-              ))}
-            </div>
+            {history.length === 0 && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={activePersona.id}
+                src={`/personas/${activePersona.id}-full.webp`}
+                alt={`${activePersona.name} — ${activePersona.vibe}`}
+                className="persona-full rise"
+              />
+            )}
           </div>
 
           {history.length === 0 && (
@@ -619,7 +635,17 @@ export default function Home() {
               </div>
               <h3 className="qa-q">{qa.question}</h3>
               {qa.persona && (
-                <div className="eyebrow mt-3">{qa.persona}</div>
+                <div className="mt-3 flex items-center gap-2">
+                  {qa.personaId && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/personas/${qa.personaId}.webp`}
+                      alt=""
+                      className="qa-avatar"
+                    />
+                  )}
+                  <span className="eyebrow">{qa.persona}</span>
+                </div>
               )}
               <div className="qa-a">
                 {renderAnswer(qa.answer)}
