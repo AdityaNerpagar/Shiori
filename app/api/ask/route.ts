@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getEpisodeSummaries } from "@/lib/wikipedia";
+import { getEpisodeSummaries, type EpisodeSummary } from "@/lib/wikipedia";
+import { getAbsoluteEpisodeOffset } from "@/lib/anilist";
 import { streamAnswer, resolveLLM, type ChatMessage } from "@/lib/llm";
 import {
   newTrace,
@@ -15,21 +16,98 @@ interface AskBody {
   title: string;
   altTitle?: string | null;
   contentType?: ContentType;
+  /**
+   * The episode number as the user sees it: within the selected entry
+   * for anime (AniList entries are per-season/per-cour), absolute for
+   * TMDB shows.
+   */
   episode: number;
+  /** Set for anime — lets us resolve the entry's place in the series. */
+  anilistId?: number | null;
   question: string;
   /** Prior Q&A exchanges, for follow-up questions. */
   history?: { question: string; answer: string }[];
 }
 
+/** How an episode is referred to in the prompt and expected citations. */
+function epLabel(e: EpisodeSummary): string {
+  return e.season != null && e.inSeason != null
+    ? `S${e.season} E${e.inSeason}`
+    : `episode ${e.episode}`;
+}
+
+function seasonFromTitle(title: string): number | null {
+  const m =
+    title.match(/\bseason\s+(\d+)\b/i) ??
+    title.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * The spoiler boundary. `episode` is per-entry for anime, so it has to
+ * be mapped onto the wiki list's numbering:
+ * 1. AniList prequel-chain offset (exact, handles per-cour entries) —
+ *    unless the wiki list turned out to be a single later season, whose
+ *    numbering doesn't start at the series beginning.
+ * 2. "Season N" parsed from the entry title + the list's season
+ *    annotations: all earlier seasons plus the first `episode` rows of
+ *    season N.
+ * 3. Otherwise (base entries, TMDB absolute numbering): rows 1..episode.
+ */
+function boundEpisodes(
+  episodes: EpisodeSummary[],
+  episode: number,
+  offset: number | null,
+  titleSeason: number | null
+): { bounded: EpisodeSummary[]; watched: number } {
+  const singleLaterSeason =
+    episodes.length > 0 &&
+    episodes.every(
+      (e) => e.season != null && e.season === episodes[0].season && e.season > 1
+    );
+
+  if (offset != null && offset > 0 && !singleLaterSeason) {
+    const watched = offset + episode;
+    return {
+      bounded: episodes.filter((e) => e.episode >= 1 && e.episode <= watched),
+      watched,
+    };
+  }
+
+  if (
+    !singleLaterSeason &&
+    titleSeason != null &&
+    titleSeason > 1 &&
+    episodes.some((e) => e.season === titleSeason)
+  ) {
+    const prior = episodes.filter(
+      (e) => e.season != null && e.season < titleSeason
+    );
+    const current = episodes
+      .filter((e) => e.season === titleSeason)
+      .slice(0, episode);
+    return {
+      bounded: [...prior, ...current],
+      watched: prior.length + episode,
+    };
+  }
+
+  return {
+    bounded: episodes.filter((e) => e.episode >= 1 && e.episode <= episode),
+    watched: episode,
+  };
+}
+
 function buildSystemPrompt(
   title: string,
-  episode: number,
+  positionLabel: string,
+  citeExample: string,
   summaryBlock: string,
   coverageNote: string
 ): string {
-  return `You are a spoiler-safe episode companion. The user is watching "${title}" and has ONLY seen up to and including episode ${episode}.
+  return `You are a spoiler-safe episode companion. The user is watching "${title}" and has ONLY seen up to and including ${positionLabel}.
 
-Below are plot summaries for episodes 1 through ${episode}. These summaries are the ENTIRE story as far as this conversation is concerned.
+Below are plot summaries for everything the user has seen, in broadcast order. These summaries are the ENTIRE story as far as this conversation is concerned.
 
 <episode_summaries>
 ${summaryBlock}
@@ -38,12 +116,12 @@ ${summaryBlock}
 Absolute rules — the user's experience of the show depends on them:
 1. Answer ONLY from the provided summaries. Never draw on your own knowledge of this show, even if you know it well. Anything not in the summaries does not exist yet.
 2. If the answer isn't in the summaries and it's something the story would likely reveal later, tease safely: tell them it's worth keeping watching, with ZERO specifics — no names, no events, no hints, no "it involves...", nothing that narrows the possibilities.
-3. For "does X happen?" questions not answered by episodes 1–${episode}, do NOT confirm or deny — either answer is a spoiler. Say you can't answer that without spoiling and encourage them to keep watching.
+3. For "does X happen?" questions not answered by what the user has seen, do NOT confirm or deny — either answer is a spoiler. Say you can't answer that without spoiling and encourage them to keep watching.
 4. If the answer genuinely isn't the kind of thing the show would reveal (production trivia, etc.), just say you don't have that information.
-5. When you state a fact, cite the episode it came from, like "(episode 4)".
+5. When you state a fact, cite the episode it came from exactly as labeled above, like "${citeExample}".
 6. If the summaries seem thin or incomplete for this show, be upfront that your knowledge of it is limited rather than guessing.
 
-Keep answers conversational and reasonably short. Never mention "summaries" or "provided context" to the user — speak as someone who has watched exactly episodes 1 through ${episode} and nothing more.`;
+Keep answers conversational and reasonably short. Never mention "summaries" or "provided context" to the user — speak as someone who has watched exactly up to ${positionLabel} and nothing more.`;
 }
 
 export async function POST(req: NextRequest) {
@@ -54,7 +132,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { title, altTitle, contentType, episode, question, history } = body;
+  const { title, altTitle, contentType, episode, anilistId, question, history } =
+    body;
   if (!title || !question || !Number.isFinite(episode) || episode < 1) {
     return NextResponse.json(
       { error: "title, episode (>=1) and question are required" },
@@ -63,15 +142,36 @@ export async function POST(req: NextRequest) {
   }
 
   const startedAt = Date.now();
-  const { source, episodes } = await getEpisodeSummaries(title, altTitle);
-  // The spoiler boundary: only episodes 1..N ever reach the model.
-  const bounded = episodes.filter((e) => e.episode >= 1 && e.episode <= episode);
+  // Anime seasons are separate AniList entries but share one wiki episode
+  // list with continuous numbering — resolve the entry's offset in it.
+  const [{ source, episodes }, offset] = await Promise.all([
+    getEpisodeSummaries(title, altTitle),
+    anilistId ? getAbsoluteEpisodeOffset(anilistId) : Promise.resolve(null),
+  ]);
+
+  // The spoiler boundary: only what the user has actually seen reaches
+  // the model.
+  const { bounded, watched } = boundEpisodes(
+    episodes,
+    episode,
+    offset,
+    seasonFromTitle(title)
+  );
+
+  const seasonAware = bounded.some(
+    (e) => e.season != null && e.inSeason != null
+  );
+  const positionLabel = bounded.length
+    ? epLabel(bounded[bounded.length - 1])
+    : `episode ${episode}`;
+  const citeExample = seasonAware ? "(S1 E4)" : "(episode 4)";
 
   const summaryBlock = bounded
-    .map(
-      (e) =>
-        `Episode ${e.episode}${e.title ? ` — "${e.title}"` : ""}:\n${e.summary}`
-    )
+    .map((e) => {
+      const label = epLabel(e);
+      const cap = label[0].toUpperCase() + label.slice(1);
+      return `${cap}${e.title ? ` — "${e.title}"` : ""}:\n${e.summary}`;
+    })
     .join("\n\n");
 
   // Every query produces a trace, whoever asked (plan §11). The consumer
@@ -79,7 +179,7 @@ export async function POST(req: NextRequest) {
   const trace = newTrace({
     resolved_title: title,
     content_type: contentType ?? "unknown",
-    episode_boundary: episode,
+    episode_boundary: watched,
     retrieval: {
       source,
       episodes_fetched: bounded.map((e) => e.episode),
@@ -117,8 +217,8 @@ export async function POST(req: NextRequest) {
   }
 
   const coverageNote =
-    bounded.length < episode
-      ? `\n\nNote: summaries were only found for ${bounded.length} of the ${episode} episodes the user has watched. Be honest about limited information if relevant.`
+    bounded.length < watched
+      ? `\n\nNote: summaries were only found for ${bounded.length} of the ${watched} episodes the user has watched. Be honest about limited information if relevant.`
       : "";
 
   // Fold prior exchanges in as real conversation turns so follow-up
@@ -134,7 +234,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { info, stream } = streamAnswer(
-      buildSystemPrompt(title, episode, summaryBlock, coverageNote),
+      buildSystemPrompt(title, positionLabel, citeExample, summaryBlock, coverageNote),
       messages
     );
     trace.model = { provider: info.provider, name: info.model };

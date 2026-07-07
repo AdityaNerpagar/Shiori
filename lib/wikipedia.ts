@@ -4,7 +4,12 @@ const API = "https://en.wikipedia.org/w/api.php";
 const USER_AGENT = "Shiori/0.1 (spoiler-safe episode companion; local dev)";
 
 export interface EpisodeSummary {
+  /** Canonical overall number — continuous across seasons, 1-based. */
   episode: number;
+  /** Season this episode belongs to, when the source reveals it. */
+  season: number | null;
+  /** Number within its season (can start at 0), when known. */
+  inSeason: number | null;
   title: string | null;
   summary: string;
 }
@@ -113,9 +118,29 @@ function splitTemplateFields(body: string): string[] {
   return parts;
 }
 
+const SEASON_IN_TITLE = /\bseason\s+(\d+)\b/i;
+
+/**
+ * Season number for each position in the wikitext, read off the section
+ * headings ("== Season 2 (2023–2024) ==") that precede the episode tables
+ * on combined list pages.
+ */
+function seasonHeadings(wikitext: string): { pos: number; season: number }[] {
+  const marks: { pos: number; season: number }[] = [];
+  for (const m of wikitext.matchAll(/^={2,5}\s*(.+?)\s*={2,5}\s*$/gm)) {
+    const season = m[1].match(SEASON_IN_TITLE);
+    if (season) marks.push({ pos: m.index!, season: parseInt(season[1], 10) });
+  }
+  return marks;
+}
+
 /** Extract every {{Episode list ...}} entry (incl. /sublist) from wikitext. */
-function parseEpisodeList(wikitext: string): EpisodeSummary[] {
+function parseEpisodeList(
+  wikitext: string,
+  seasonHint: number | null = null
+): EpisodeSummary[] {
   const episodes: EpisodeSummary[] = [];
+  const headings = seasonHint === null ? seasonHeadings(wikitext) : [];
   const re = /\{\{\s*Episode list/gi;
   let match: RegExpExecArray | null;
 
@@ -156,8 +181,24 @@ function parseEpisodeList(wikitext: string): EpisodeSummary[] {
     const summary = cleanWikitext(summaryRaw);
     if (!Number.isFinite(episode) || summary.length < 10) continue;
 
+    // EpisodeNumber2 is the within-season number on multi-season lists
+    // (EpisodeNumber being the overall one).
+    const inSeasonRaw = fields["episodenumber2"]
+      ? parseInt(cleanWikitext(fields["episodenumber2"]), 10)
+      : NaN;
+
+    let season = seasonHint;
+    if (season === null) {
+      for (const h of headings) {
+        if (h.pos < match.index) season = h.season;
+        else break;
+      }
+    }
+
     episodes.push({
       episode,
+      season,
+      inSeason: Number.isFinite(inSeasonRaw) ? inSeasonRaw : null,
       title: fields["title"] ? cleanWikitext(fields["title"]) || null : null,
       summary,
     });
@@ -183,17 +224,26 @@ function findLinkedEpisodePages(wikitext: string): string[] {
   return [...pages].slice(0, 8);
 }
 
+function seasonFromPageTitle(page: string): number | null {
+  const m = page.match(SEASON_IN_TITLE);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 async function episodesFromPage(page: string): Promise<EpisodeSummary[]> {
   const wikitext = await getWikitext(page);
   if (!wikitext) return [];
 
-  const inline = parseEpisodeList(wikitext);
+  const inline = parseEpisodeList(wikitext, seasonFromPageTitle(page));
   const linked = findLinkedEpisodePages(wikitext);
 
   let fromLinked: EpisodeSummary[] = [];
   for (const sub of linked) {
     const subText = await getWikitext(sub);
-    if (subText) fromLinked = fromLinked.concat(parseEpisodeList(subText));
+    if (subText) {
+      fromLinked = fromLinked.concat(
+        parseEpisodeList(subText, seasonFromPageTitle(sub))
+      );
+    }
   }
 
   // Hub pages transclude per-season pages; inline entries on a hub are
@@ -201,7 +251,38 @@ async function episodesFromPage(page: string): Promise<EpisodeSummary[]> {
   return fromLinked.length > inline.length ? fromLinked : inline;
 }
 
-function dedupeAndSort(episodes: EpisodeSummary[]): EpisodeSummary[] {
+/**
+ * Turn the raw parse (document order, numbering that may restart per
+ * season) into a canonical list: `episode` continuous and 1-based across
+ * the whole run, seasons inferred from numbering restarts when headings
+ * and page titles revealed nothing, deduped and sorted.
+ */
+function normalizeEpisodes(raw: EpisodeSummary[]): EpisodeSummary[] {
+  if (raw.length === 0) return [];
+
+  // Seasons unknown everywhere + numbering restarts ⇒ each restart is a
+  // season boundary (per-season pages that only carry in-season numbers).
+  const restarts = raw.some((e, i) => i > 0 && e.episode < raw[i - 1].episode);
+  if (restarts && raw.every((e) => e.season === null)) {
+    let season = 1;
+    for (let i = 0; i < raw.length; i++) {
+      if (i > 0 && raw[i].episode < raw[i - 1].episode) season++;
+      raw[i].season = season;
+    }
+  }
+
+  // A restart means the parsed numbers were per-season, not overall —
+  // keep them as in-season numbers and count overall by position. When
+  // there's no restart the numbers are already a continuous overall run
+  // (possibly a suffix, if only a later season's page was found).
+  const episodes = restarts
+    ? raw.map((e, i) => ({
+        ...e,
+        inSeason: e.inSeason ?? e.episode,
+        episode: i + 1,
+      }))
+    : raw;
+
   const byNumber = new Map<number, EpisodeSummary>();
   for (const ep of episodes) {
     const existing = byNumber.get(ep.episode);
@@ -221,7 +302,7 @@ export async function getEpisodeSummaries(
   title: string,
   altTitle?: string | null
 ): Promise<SummaryResult> {
-  const key = `wiki:summaries:${title.toLowerCase()}|${(altTitle ?? "").toLowerCase()}`;
+  const key = `wiki:summaries:v2:${title.toLowerCase()}|${(altTitle ?? "").toLowerCase()}`;
   return cached(key, 2 * DAYS, async () => {
     const candidates = [...new Set([title, altTitle].filter(Boolean))] as string[];
 
@@ -229,7 +310,7 @@ export async function getEpisodeSummaries(
       const hits = await searchPages(`List of ${name} episodes`);
       const listPages = hits.filter((h) => /^list of .*episodes/i.test(h));
       for (const page of listPages.slice(0, 2)) {
-        const episodes = dedupeAndSort(await episodesFromPage(page));
+        const episodes = normalizeEpisodes(await episodesFromPage(page));
         if (episodes.length > 0) return { source: page, episodes };
       }
     }
@@ -238,7 +319,7 @@ export async function getEpisodeSummaries(
     for (const name of candidates) {
       const hits = await searchPages(name);
       for (const page of hits.slice(0, 2)) {
-        const episodes = dedupeAndSort(await episodesFromPage(page));
+        const episodes = normalizeEpisodes(await episodesFromPage(page));
         if (episodes.length > 0) return { source: page, episodes };
       }
     }

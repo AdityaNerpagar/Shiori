@@ -9,7 +9,7 @@ import path from "node:path";
  * default: nothing is written unless TRACE_LOG=1.
  */
 
-export const PROMPT_TEMPLATE_VERSION = "v1";
+export const PROMPT_TEMPLATE_VERSION = "v2";
 
 export type ContentType = "anime" | "tv" | "unknown";
 

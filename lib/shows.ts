@@ -10,6 +10,7 @@ export interface ShowResult {
   id: string; // "anilist:123" | "tmdb:456"
   source: "anilist" | "tmdb";
   contentType: "anime" | "tv";
+  anilistId: number | null;
   malId: number | null;
   tmdbId: number | null;
   title: string;
@@ -38,6 +39,7 @@ export async function searchShows(query: string): Promise<ShowResult[]> {
           id: `anilist:${a.id}`,
           source: "anilist" as const,
           contentType: "anime" as const,
+          anilistId: a.id,
           malId: a.idMal,
           tmdbId: null,
           title: a.title.english || a.title.romaji || "Unknown",
@@ -60,6 +62,7 @@ export async function searchShows(query: string): Promise<ShowResult[]> {
           // Edge case from the plan: anime that surfaces on TMDB. Route it
           // as anime so grounding/comments use the anime-tuned paths.
           contentType: t.looksLikeAnime ? ("anime" as const) : ("tv" as const),
+          anilistId: null,
           malId: null,
           tmdbId: t.id,
           title: t.name,

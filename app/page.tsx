@@ -6,6 +6,7 @@ interface ShowResult {
   id: string;
   source: "anilist" | "tmdb";
   contentType: "anime" | "tv";
+  anilistId: number | null;
   malId: number | null;
   tmdbId: number | null;
   title: string;
@@ -53,11 +54,12 @@ const PROVIDER_LABEL: Record<string, string> = {
   ollama: "local",
 };
 
-/** Highlight "(episode N)" citations as lamp chips. */
+/** Highlight "(episode N)" / "(S2 E7)" citations as lamp chips. */
+const CITE = String.raw`(?:episode|ep\.?)\s*[\d,\s&–-]+|s\d+\s*e[\d,\s&–-]+(?:,?\s*s\d+\s*e[\d,\s&–-]+)*`;
 function renderAnswer(text: string) {
-  const parts = text.split(/(\((?:episode|ep\.?)\s*[\d,\s&–-]+\))/gi);
+  const parts = text.split(new RegExp(`(\\((?:${CITE})\\))`, "gi"));
   return parts.map((part, i) =>
-    /^\((?:episode|ep\.?)\s*[\d,\s&–-]+\)$/i.test(part) ? (
+    new RegExp(`^\\((?:${CITE})\\)$`, "i").test(part) ? (
       <span key={i} className="cite">
         {part.slice(1, -1)}
       </span>
@@ -255,6 +257,7 @@ export default function Home() {
             title: show.title,
             altTitle: show.altTitle,
             contentType: show.contentType,
+            anilistId: show.anilistId,
             episode,
             question: q,
             history: followUpHistory,

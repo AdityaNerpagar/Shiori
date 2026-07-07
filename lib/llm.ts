@@ -5,7 +5,7 @@ export interface LLMInfo {
   model: string;
 }
 
-const GEMINI_DEFAULT_MODEL = "gemini-2.5-flash";
+const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite";
 const ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-8";
 const OLLAMA_DEFAULT_MODEL = "qwen3.5:27b";
 
