@@ -252,36 +252,55 @@ async function episodesFromPage(page: string): Promise<EpisodeSummary[]> {
 }
 
 /**
- * Turn the raw parse (document order, numbering that may restart per
- * season) into a canonical list: `episode` continuous and 1-based across
- * the whole run, seasons inferred from numbering restarts when headings
- * and page titles revealed nothing, deduped and sorted.
+ * Turn the raw parse (document order) into a canonical list: `episode`
+ * continuous across the whole run, seasons inferred from numbering
+ * restarts when headings and page titles revealed nothing, deduped and
+ * sorted.
+ *
+ * The parsed numbers can decrease mid-list for two very different
+ * reasons, and telling them apart matters:
+ * - per-season numbering: several runs that each start back at 0/1
+ *   (per-season pages carrying only in-season numbers) — the numbers
+ *   are NOT overall, so count overall by position;
+ * - a stray out-of-order table: e.g. a specials section appended after
+ *   the main list (Jujutsu Kaisen's "Special Episode" row 54 after 60)
+ *   in an otherwise continuous overall numbering — the numbers ARE
+ *   overall, so sorting by them is correct and positional renumbering
+ *   would blow past the spoiler boundary.
  */
 function normalizeEpisodes(raw: EpisodeSummary[]): EpisodeSummary[] {
   if (raw.length === 0) return [];
 
-  // Seasons unknown everywhere + numbering restarts ⇒ each restart is a
-  // season boundary (per-season pages that only carry in-season numbers).
-  const restarts = raw.some((e, i) => i > 0 && e.episode < raw[i - 1].episode);
-  if (restarts && raw.every((e) => e.season === null)) {
-    let season = 1;
-    for (let i = 0; i < raw.length; i++) {
-      if (i > 0 && raw[i].episode < raw[i - 1].episode) season++;
-      raw[i].season = season;
-    }
+  // Split document order into runs at each numbering decrease.
+  const runs: EpisodeSummary[][] = [[raw[0]]];
+  for (let i = 1; i < raw.length; i++) {
+    if (raw[i].episode < raw[i - 1].episode) runs.push([]);
+    runs[runs.length - 1].push(raw[i]);
   }
 
-  // A restart means the parsed numbers were per-season, not overall —
-  // keep them as in-season numbers and count overall by position. When
-  // there's no restart the numbers are already a continuous overall run
-  // (possibly a suffix, if only a later season's page was found).
-  const episodes = restarts
-    ? raw.map((e, i) => ({
-        ...e,
-        inSeason: e.inSeason ?? e.episode,
-        episode: i + 1,
-      }))
-    : raw;
+  // Per-season numbering shows itself as at least two runs starting
+  // back at the beginning (episode 0/1/2 — some seasons open with an
+  // episode 0).
+  const restarting =
+    runs.filter((r) => r[0].episode <= 2).length >= 2 && runs.length > 1;
+
+  let episodes: EpisodeSummary[];
+  if (restarting) {
+    // Seasons unknown everywhere ⇒ each run is a season.
+    if (raw.every((e) => e.season === null)) {
+      runs.forEach((run, i) => run.forEach((e) => (e.season = i + 1)));
+    }
+    // Parsed numbers were in-season; count overall by position.
+    episodes = raw.map((e, i) => ({
+      ...e,
+      inSeason: e.inSeason ?? e.episode,
+      episode: i + 1,
+    }));
+  } else {
+    // Continuous overall numbering (possibly a suffix, if only a later
+    // season's page was found) — stray sections just need sorting.
+    episodes = raw;
+  }
 
   const byNumber = new Map<number, EpisodeSummary>();
   for (const ep of episodes) {
@@ -302,7 +321,7 @@ export async function getEpisodeSummaries(
   title: string,
   altTitle?: string | null
 ): Promise<SummaryResult> {
-  const key = `wiki:summaries:v2:${title.toLowerCase()}|${(altTitle ?? "").toLowerCase()}`;
+  const key = `wiki:summaries:v3:${title.toLowerCase()}|${(altTitle ?? "").toLowerCase()}`;
   return cached(key, 2 * DAYS, async () => {
     const candidates = [...new Set([title, altTitle].filter(Boolean))] as string[];
 

@@ -39,7 +39,14 @@ function epLabel(e: EpisodeSummary): string {
     : `episode ${e.episode}`;
 }
 
-function seasonFromTitle(title: string): number | null {
+/**
+ * Season the entry's title pins it to — but only when the entry starts
+ * at that season's beginning. "Season 3" and "Season 3 ... Part 1"
+ * qualify; "Season 2 Part 2" / "Cour 2" start mid-season, so their
+ * within-entry episode numbers can't be mapped from the season alone.
+ */
+function seasonStartFromTitle(title: string): number | null {
+  if (/\b(?:part|cour)\s*(?:[2-9]|\d{2,})\b/i.test(title)) return null;
   const m =
     title.match(/\bseason\s+(\d+)\b/i) ??
     title.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
@@ -48,21 +55,50 @@ function seasonFromTitle(title: string): number | null {
 
 /**
  * The spoiler boundary. `episode` is per-entry for anime, so it has to
- * be mapped onto the wiki list's numbering:
- * 1. AniList prequel-chain offset (exact, handles per-cour entries) —
- *    unless the wiki list turned out to be a single later season, whose
- *    numbering doesn't start at the series beginning.
- * 2. "Season N" parsed from the entry title + the list's season
- *    annotations: all earlier seasons plus the first `episode` rows of
- *    season N.
+ * be mapped onto the wiki list:
+ * 1. Season-structured (safest): when the title names a plain season N
+ *    and the wiki rows carry season annotations, take every earlier
+ *    season plus season N's first `episode` in-season numbers. Immune
+ *    to numbering pathologies (missing seasons, out-of-order specials) —
+ *    a wrong overall number can never leak across a season boundary.
+ * 2. AniList prequel-chain offset against overall numbering (handles
+ *    mid-season cour entries like "Season 2 Part 2") — unless the wiki
+ *    list turned out to be a single later season, whose numbering
+ *    doesn't start at the series beginning.
  * 3. Otherwise (base entries, TMDB absolute numbering): rows 1..episode.
+ *
+ * `watched` is the user's true episode count (for honesty about thin
+ * coverage), best known from the offset when available.
  */
 function boundEpisodes(
   episodes: EpisodeSummary[],
   episode: number,
   offset: number | null,
-  titleSeason: number | null
+  title: string
 ): { bounded: EpisodeSummary[]; watched: number } {
+  const startSeason = seasonStartFromTitle(title);
+  const seasonRows =
+    startSeason != null
+      ? episodes.filter((e) => e.season === startSeason)
+      : [];
+  const minInSeason = Math.min(
+    ...seasonRows.map((e) => e.inSeason ?? Infinity)
+  );
+
+  if (seasonRows.length > 0 && Number.isFinite(minInSeason)) {
+    const prior = episodes.filter(
+      (e) => e.season != null && e.season < startSeason!
+    );
+    const inSeasonMax = minInSeason + episode - 1;
+    const current = seasonRows.filter(
+      (e) => e.inSeason != null && e.inSeason <= inSeasonMax
+    );
+    return {
+      bounded: [...prior, ...current].sort((a, b) => a.episode - b.episode),
+      watched: offset != null ? offset + episode : prior.length + episode,
+    };
+  }
+
   const singleLaterSeason =
     episodes.length > 0 &&
     episodes.every(
@@ -74,24 +110,6 @@ function boundEpisodes(
     return {
       bounded: episodes.filter((e) => e.episode >= 1 && e.episode <= watched),
       watched,
-    };
-  }
-
-  if (
-    !singleLaterSeason &&
-    titleSeason != null &&
-    titleSeason > 1 &&
-    episodes.some((e) => e.season === titleSeason)
-  ) {
-    const prior = episodes.filter(
-      (e) => e.season != null && e.season < titleSeason
-    );
-    const current = episodes
-      .filter((e) => e.season === titleSeason)
-      .slice(0, episode);
-    return {
-      bounded: [...prior, ...current],
-      watched: prior.length + episode,
     };
   }
 
@@ -166,12 +184,7 @@ export async function POST(req: NextRequest) {
 
   // The spoiler boundary: only what the user has actually seen reaches
   // the model.
-  const { bounded, watched } = boundEpisodes(
-    episodes,
-    episode,
-    offset,
-    seasonFromTitle(title)
-  );
+  const { bounded, watched } = boundEpisodes(episodes, episode, offset, title);
 
   const seasonAware = bounded.some(
     (e) => e.season != null && e.inSeason != null
