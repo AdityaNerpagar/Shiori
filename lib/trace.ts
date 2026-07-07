@@ -9,7 +9,7 @@ import path from "node:path";
  * default: nothing is written unless TRACE_LOG=1.
  */
 
-export const PROMPT_TEMPLATE_VERSION = "v2";
+export const PROMPT_TEMPLATE_VERSION = "v3";
 
 export type ContentType = "anime" | "tv" | "unknown";
 
@@ -30,6 +30,8 @@ export interface QueryTrace {
   context_sent: string;
   prompt_template_version: string;
   model: { provider: string; name: string };
+  /** Companion voice the answer was delivered in. */
+  persona: string;
   question: string;
   output: { raw_answer: string | null };
   latency_ms: number | null;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEpisodeSummaries, type EpisodeSummary } from "@/lib/wikipedia";
 import { getAbsoluteEpisodeOffset } from "@/lib/anilist";
+import { getPersona, type Persona } from "@/lib/personas";
 import { streamAnswer, resolveLLM, type ChatMessage } from "@/lib/llm";
 import {
   newTrace,
@@ -24,6 +25,8 @@ interface AskBody {
   episode: number;
   /** Set for anime — lets us resolve the entry's place in the series. */
   anilistId?: number | null;
+  /** Companion voice id — resolved against lib/personas server-side. */
+  persona?: string | null;
   question: string;
   /** Prior Q&A exchanges, for follow-up questions. */
   history?: { question: string; answer: string }[];
@@ -103,9 +106,10 @@ function buildSystemPrompt(
   positionLabel: string,
   citeExample: string,
   summaryBlock: string,
-  coverageNote: string
+  coverageNote: string,
+  persona: Persona
 ): string {
-  return `You are a spoiler-safe episode companion. The user is watching "${title}" and has ONLY seen up to and including ${positionLabel}.
+  return `You are ${persona.name}, a spoiler-safe episode companion. The user is watching "${title}" and has ONLY seen up to and including ${positionLabel}.
 
 Below are plot summaries for everything the user has seen, in broadcast order. These summaries are the ENTIRE story as far as this conversation is concerned.
 
@@ -121,7 +125,10 @@ Absolute rules — the user's experience of the show depends on them:
 5. When you state a fact, cite the episode it came from exactly as labeled above, like "${citeExample}".
 6. If the summaries seem thin or incomplete for this show, be upfront that your knowledge of it is limited rather than guessing.
 
-Keep answers conversational and reasonably short. Never mention "summaries" or "provided context" to the user — speak as someone who has watched exactly up to ${positionLabel} and nothing more.`;
+Your voice:
+${persona.voice}
+
+The voice shapes HOW you speak, never WHAT you may reveal — if personality and the rules above ever pull in different directions, the rules win, in character. Keep answers conversational and reasonably short, and keep the episode citations exactly as specified. Never mention "summaries" or "provided context" to the user — speak as someone who has watched the whole show but respects that the user has seen exactly up to ${positionLabel} and nothing more.`;
 }
 
 export async function POST(req: NextRequest) {
@@ -132,8 +139,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { title, altTitle, contentType, episode, anilistId, question, history } =
-    body;
+  const {
+    title,
+    altTitle,
+    contentType,
+    episode,
+    anilistId,
+    question,
+    history,
+  } = body;
+  const persona = getPersona(body.persona);
   if (!title || !question || !Number.isFinite(episode) || episode < 1) {
     return NextResponse.json(
       { error: "title, episode (>=1) and question are required" },
@@ -188,6 +203,7 @@ export async function POST(req: NextRequest) {
     },
     context_sent: summaryBlock,
     model: { provider: "none", name: "none" },
+    persona: persona.id,
     question,
     output: { raw_answer: null },
     latency_ms: null,
@@ -234,7 +250,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const { info, stream } = streamAnswer(
-      buildSystemPrompt(title, positionLabel, citeExample, summaryBlock, coverageNote),
+      buildSystemPrompt(
+        title,
+        positionLabel,
+        citeExample,
+        summaryBlock,
+        coverageNote,
+        persona
+      ),
       messages
     );
     trace.model = { provider: info.provider, name: info.model };

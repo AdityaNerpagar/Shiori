@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { PERSONAS, DEFAULT_PERSONA_ID } from "@/lib/personas";
 
 interface ShowResult {
   id: string;
@@ -32,6 +33,8 @@ interface QA {
   summariesUsed: number;
   streaming: boolean;
   episode: number;
+  /** Companion who answered (display name, at ask time). */
+  persona: string;
 }
 
 interface CommentsData {
@@ -145,6 +148,23 @@ export default function Home() {
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
 
+  // companion voice — persisted across visits
+  const [personaId, setPersonaId] = useState(DEFAULT_PERSONA_ID);
+  useEffect(() => {
+    const saved = localStorage.getItem("shiori:persona");
+    if (saved && PERSONAS.some((p) => p.id === saved)) setPersonaId(saved);
+  }, []);
+  const pickPersona = useCallback((id: string) => {
+    setPersonaId(id);
+    try {
+      localStorage.setItem("shiori:persona", id);
+    } catch {
+      // private mode — selection just won't persist
+    }
+  }, []);
+  const activePersona =
+    PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0];
+
   // comments
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [comments, setComments] = useState<CommentsData | null>(null);
@@ -238,6 +258,7 @@ export default function Home() {
         summariesUsed: 0,
         streaming: true,
         episode,
+        persona: activePersona.name,
       };
       // Follow-up context: completed exchanges asked at or below the current
       // episode (an answer given at a higher episode could leak backwards).
@@ -259,6 +280,7 @@ export default function Home() {
             contentType: show.contentType,
             anilistId: show.anilistId,
             episode,
+            persona: personaId,
             question: q,
             history: followUpHistory,
           }),
@@ -306,7 +328,7 @@ export default function Home() {
         setAsking(false);
       }
     },
-    [show, question, episode, asking, history]
+    [show, question, episode, asking, history, personaId, activePersona]
   );
 
   const loadComments = useCallback(async () => {
@@ -557,6 +579,26 @@ export default function Home() {
       {/* ── reading log ── */}
       {show && (
         <section className="mt-12">
+          <div className="mb-6">
+            <div className="eyebrow mb-3">
+              Watching with · <span className="lit">{activePersona.name}</span>,{" "}
+              {activePersona.vibe}
+            </div>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Companion voice">
+              {PERSONAS.map((p) => (
+                <button
+                  key={p.id}
+                  className={`chip${p.id === personaId ? " on" : ""}`}
+                  aria-pressed={p.id === personaId}
+                  title={p.vibe}
+                  onClick={() => pickPersona(p.id)}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {history.length === 0 && (
             <div className="mb-6">
               <div className="eyebrow mb-3">Try asking</div>
@@ -576,13 +618,17 @@ export default function Home() {
                 You · <span className="lit">{seasons ? epLabel(qa.episode) : `EP ${qa.episode}`}</span>
               </div>
               <h3 className="qa-q">{qa.question}</h3>
+              {qa.persona && (
+                <div className="eyebrow mt-3">{qa.persona}</div>
+              )}
               <div className="qa-a">
                 {renderAnswer(qa.answer)}
                 {qa.streaming && qa.answer && <span className="caret" aria-hidden />}
                 {qa.streaming && !qa.answer && (
                   <span className="patience">
                     <span className="lamp-dot" aria-hidden />
-                    reading episodes 1–{qa.episode}… local models take a minute or two
+                    {qa.persona || "your companion"} is going back through
+                    everything you&apos;ve seen… local models take a minute or two
                   </span>
                 )}
               </div>
