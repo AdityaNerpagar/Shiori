@@ -6,8 +6,44 @@ import {
   redditEnabled,
 } from "@/lib/reddit";
 import { absoluteToSeasonEpisode } from "@/lib/tmdb";
+import { LOOKUP_RULES, clientIp, rateLimit } from "@/lib/ratelimit";
+
+/**
+ * Thread links come from third-party APIs and end up as <a href> in the
+ * UI — only pass through https links on the hosts they're supposed to
+ * point at.
+ */
+function safeThreadUrl(url: unknown, hosts: string[]): string | null {
+  if (typeof url !== "string") return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return null;
+    return hosts.some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`))
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeThread<T extends { url: string }>(
+  thread: T | null,
+  hosts: string[]
+): T | null {
+  if (!thread) return null;
+  const url = safeThreadUrl(thread.url, hosts);
+  return url ? { ...thread, url } : null;
+}
 
 export async function GET(req: NextRequest) {
+  const limited = rateLimit(`comments:${clientIp(req)}`, LOOKUP_RULES);
+  if (!limited.ok) {
+    return NextResponse.json(
+      { error: "Too many requests — please slow down." },
+      { status: 429, headers: { "Retry-After": String(limited.retryAfterSec) } }
+    );
+  }
+
   const params = req.nextUrl.searchParams;
   const malId = parseInt(params.get("malId") ?? "", 10);
   const tmdbId = parseInt(params.get("tmdbId") ?? "", 10);
@@ -42,11 +78,17 @@ export async function GET(req: NextRequest) {
   ]);
 
   return NextResponse.json({
-    mal: malResult.status === "fulfilled" ? malResult.value : null,
+    mal:
+      malResult.status === "fulfilled"
+        ? sanitizeThread(malResult.value, ["myanimelist.net"])
+        : null,
     malError:
       malResult.status === "rejected" ? (malResult.reason as Error).message : null,
     malApplicable: contentType === "anime",
-    reddit: redditResult.status === "fulfilled" ? redditResult.value : null,
+    reddit:
+      redditResult.status === "fulfilled"
+        ? sanitizeThread(redditResult.value, ["reddit.com"])
+        : null,
     redditError:
       redditResult.status === "rejected"
         ? (redditResult.reason as Error).message

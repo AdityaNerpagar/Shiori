@@ -48,6 +48,18 @@ export function resolveLLM(): LLMInfo {
 
 const encoder = new TextEncoder();
 
+/**
+ * Upstream error detail (which can include response bodies) is useful in
+ * dev but shouldn't reach anonymous clients in production — log it
+ * server-side and send a generic line instead.
+ */
+function clientErrorText(provider: string, detail: string): string {
+  console.error(`${provider} error:`, detail);
+  return process.env.NODE_ENV === "production"
+    ? `\n\n[The model provider returned an error. Please try again.]`
+    : `\n\n[${provider} error: ${detail}]`;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -61,7 +73,7 @@ function anthropicStream(
   const client = new Anthropic();
   const stream = client.messages.stream({
     model,
-    max_tokens: 4096,
+    max_tokens: 8192,
     system,
     messages,
   });
@@ -80,7 +92,7 @@ function anthropicStream(
         controller.close();
       } catch (err) {
         controller.enqueue(
-          encoder.encode(`\n\n[Anthropic error: ${(err as Error).message}]`)
+          encoder.encode(clientErrorText("Anthropic", (err as Error).message))
         );
         controller.close();
       }
@@ -99,6 +111,9 @@ function geminiStream(
     `${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   const payload = JSON.stringify({
     systemInstruction: { parts: [{ text: system }] },
+    // Cap output so a hostile prompt can't run up token spend. 8192 clears
+    // the worst legitimate case (full-series recap of a long show) with room.
+    generationConfig: { maxOutputTokens: 8192 },
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
@@ -108,7 +123,7 @@ function geminiStream(
   return new ReadableStream({
     async start(controller) {
       const fail = (message: string) => {
-        controller.enqueue(encoder.encode(`[Gemini error: ${message}]`));
+        controller.enqueue(encoder.encode(clientErrorText("Gemini", message)));
         controller.close();
       };
 
@@ -191,7 +206,7 @@ function ollamaStream(
       const http = await import("node:http");
 
       const fail = (message: string) => {
-        controller.enqueue(encoder.encode(`[Ollama error: ${message}]`));
+        controller.enqueue(encoder.encode(clientErrorText("Ollama", message)));
         controller.close();
       };
 

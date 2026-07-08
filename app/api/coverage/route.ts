@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEpisodeSummaries } from "@/lib/wikipedia";
+import { LOOKUP_RULES, clientIp, rateLimit } from "@/lib/ratelimit";
 
 /**
  * Reports how many episode summaries we can ground answers on, so the UI
  * can warn about thin coverage before the user asks anything.
  */
 export async function GET(req: NextRequest) {
+  const limited = rateLimit(`coverage:${clientIp(req)}`, LOOKUP_RULES);
+  if (!limited.ok) {
+    return NextResponse.json(
+      { error: "Too many requests — please slow down." },
+      { status: 429, headers: { "Retry-After": String(limited.retryAfterSec) } }
+    );
+  }
+
   const title = req.nextUrl.searchParams.get("title")?.trim();
   const altTitle = req.nextUrl.searchParams.get("altTitle")?.trim() || null;
   if (!title) {
